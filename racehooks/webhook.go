@@ -1,6 +1,7 @@
 package racehooks
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -101,11 +102,11 @@ func ParsePayload(rawBody []byte) (*WebhookPayload, error) {
 		SessionID: raw.SessionID,
 		RawData:   raw.Data,
 	}
-	if len(raw.Analytics) > 0 && string(raw.Analytics) != "null" {
+	if len(raw.Analytics) > 0 && !bytes.Equal(raw.Analytics, []byte("null")) {
 		p.HasAnalytics = true
 		p.RawAnalytics = raw.Analytics
 	}
-	if len(raw.Replay) > 0 && string(raw.Replay) != "null" {
+	if len(raw.Replay) > 0 && !bytes.Equal(raw.Replay, []byte("null")) {
 		p.IsReplay = true
 		p.RawReplay = raw.Replay
 	}

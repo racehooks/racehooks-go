@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -355,5 +358,155 @@ func TestTestWebhook_Success(t *testing.T) {
 	}
 	if !resp.Delivered {
 		t.Error("expected delivered=true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Token refresh — regression tests for race condition and ExpiresIn clamp
+// ---------------------------------------------------------------------------
+
+// TestAuthenticate_ConcurrentTokenRefresh verifies that multiple goroutines
+// calling a method simultaneously do not race on the token fields.
+// Run with: go test -race ./racehooks/...
+func TestAuthenticate_ConcurrentTokenRefresh(t *testing.T) {
+	var authCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/oauth", func(w http.ResponseWriter, r *http.Request) {
+		authCalls.Add(1)
+		writeJSON(w, map[string]interface{}{
+			"access_token": "tok_concurrent",
+			"token_type":   "Bearer",
+			"expires_in":   43200,
+		})
+	})
+	mux.HandleFunc("/v1/feeds", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"feeds": []interface{}{},
+				"total": 0, "limit": 50, "offset": 0,
+			},
+		})
+	})
+
+	_, client := newTestServer(t, mux)
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errs[i] = client.GetFeeds(context.Background(), nil)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+}
+
+// TestAuthenticate_ExpiresInBelowSkew verifies that a server returning a very
+// short ExpiresIn does not produce a negative token expiry that causes an
+// infinite re-auth loop.
+func TestAuthenticate_ExpiresInBelowSkew(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/oauth", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]interface{}{
+			"access_token": "tok_short",
+			"token_type":   "Bearer",
+			"expires_in":   30, // less than the 60-second skew buffer
+		})
+	})
+	mux.HandleFunc("/v1/feeds", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"feeds": []interface{}{},
+				"total": 0, "limit": 50, "offset": 0,
+			},
+		})
+	})
+
+	_, client := newTestServer(t, mux)
+	// Should not error — clamped expiry means token is considered immediately
+	// expired but a fresh one is fetched and used within the same call.
+	if _, err := client.GetFeeds(context.Background(), nil); err != nil {
+		t.Fatalf("GetFeeds with short ExpiresIn: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetWebhookLogs
+// ---------------------------------------------------------------------------
+
+func TestGetWebhookLogs_Success(t *testing.T) {
+	mux := setupAuthMux(t)
+	mux.HandleFunc("/v1/webhooks/wh_log/logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		writeJSON(w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"logs": []map[string]interface{}{
+					{
+						"logId":        "log_1",
+						"webhookId":    "wh_log",
+						"statusCode":   200,
+						"retryCount":   0,
+						"errorMessage": nil,
+						"payload":      nil,
+						"durationMs":   42,
+						"createdAt":    time.Now().Format(time.RFC3339),
+					},
+				},
+				"total": 1, "limit": 50, "offset": 0,
+			},
+		})
+	})
+
+	_, client := newTestServer(t, mux)
+	logs, err := client.GetWebhookLogs(context.Background(), "wh_log", nil)
+	if err != nil {
+		t.Fatalf("GetWebhookLogs: %v", err)
+	}
+	if len(logs.Logs) != 1 {
+		t.Errorf("expected 1 log entry, got %d", len(logs.Logs))
+	}
+	if logs.Logs[0].LogID != "log_1" {
+		t.Errorf("expected logId log_1, got %s", logs.Logs[0].LogID)
+	}
+}
+
+// TestGetWebhookLogs_Pagination verifies that limit/offset are forwarded as
+// query parameters.
+func TestGetWebhookLogs_Pagination(t *testing.T) {
+	mux := setupAuthMux(t)
+	mux.HandleFunc("/v1/webhooks/wh_pg/logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "10" {
+			t.Errorf("expected limit=10, got %s", r.URL.Query().Get("limit"))
+		}
+		if r.URL.Query().Get("offset") != "20" {
+			t.Errorf("expected offset=20, got %s", r.URL.Query().Get("offset"))
+		}
+		writeJSON(w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"logs": []interface{}{},
+				"total": 0, "limit": 10, "offset": 20,
+			},
+		})
+	})
+
+	_, client := newTestServer(t, mux)
+	if _, err := client.GetWebhookLogs(context.Background(), "wh_pg",
+		&racehooks.ListWebhooksParams{Limit: 10, Offset: 20}); err != nil {
+		t.Fatalf("GetWebhookLogs pagination: %v", err)
 	}
 }

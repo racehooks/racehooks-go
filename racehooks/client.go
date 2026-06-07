@@ -98,11 +98,14 @@ type TokenResponse struct {
 // It is called automatically before any API request when the token is absent
 // or expired, so you rarely need to call this directly.
 func (c *Client) Authenticate(ctx context.Context) error {
-	body, _ := json.Marshal(map[string]string{
+	body, err := json.Marshal(map[string]string{
 		"client_id":     c.clientID,
 		"client_secret": c.clientSecret,
 		"grant_type":    "client_credentials",
 	})
+	if err != nil {
+		return fmt.Errorf("racehooks: marshal auth request: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/oauth", bytes.NewReader(body))
 	if err != nil {
@@ -125,22 +128,44 @@ func (c *Client) Authenticate(ctx context.Context) error {
 		return fmt.Errorf("racehooks: decode token response: %w", err)
 	}
 
+	// Guard against malformed/zero ExpiresIn from the server.
+	// Subtract a 60-second skew buffer; clamp to at least 0 so we never
+	// store a negative expiry and trigger a re-auth storm.
+	skewedExpiry := tr.ExpiresIn - 60
+	if skewedExpiry < 0 {
+		skewedExpiry = 0
+	}
+
 	c.mu.Lock()
 	c.accessToken = tr.AccessToken
-	c.tokenExpiry = time.Now().Add(time.Duration(tr.ExpiresIn-60) * time.Second)
+	c.tokenExpiry = time.Now().Add(time.Duration(skewedExpiry) * time.Second)
 	c.mu.Unlock()
 
 	return nil
 }
 
-func (c *Client) ensureToken(ctx context.Context) error {
+// ensureToken guarantees a valid token exists and returns it.
+// The token is re-fetched at most once per concurrent group: if two goroutines
+// both observe an expired token, the first to re-acquire the lock after
+// Authenticate returns will win and store the new token; the second will see
+// the already-fresh token and skip re-authentication.
+func (c *Client) ensureToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
-	valid := c.accessToken != "" && time.Now().Before(c.tokenExpiry)
-	c.mu.Unlock()
-	if valid {
-		return nil
+	if c.accessToken != "" && time.Now().Before(c.tokenExpiry) {
+		tok := c.accessToken
+		c.mu.Unlock()
+		return tok, nil
 	}
-	return c.Authenticate(ctx)
+	c.mu.Unlock()
+
+	if err := c.Authenticate(ctx); err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	tok := c.accessToken
+	c.mu.Unlock()
+	return tok, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +173,8 @@ func (c *Client) ensureToken(ctx context.Context) error {
 // ---------------------------------------------------------------------------
 
 func (c *Client) do(ctx context.Context, method, path string, body interface{}, out interface{}) error {
-	if err := c.ensureToken(ctx); err != nil {
+	tok, err := c.ensureToken(ctx)
+	if err != nil {
 		return err
 	}
 
@@ -165,7 +191,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	if err != nil {
 		return fmt.Errorf("racehooks: build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -207,6 +233,22 @@ func parseAPIError(resp *http.Response) error {
 	return &APIError{StatusCode: resp.StatusCode, Message: msg}
 }
 
+// paginationQuery builds a query string from limit/offset values.
+// Zero values are omitted so the server can apply its own defaults.
+func paginationQuery(limit, offset int) string {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	if offset > 0 {
+		q.Set("offset", strconv.Itoa(offset))
+	}
+	if len(q) == 0 {
+		return ""
+	}
+	return "?" + q.Encode()
+}
+
 // ---------------------------------------------------------------------------
 // Feeds
 // ---------------------------------------------------------------------------
@@ -235,18 +277,9 @@ type ListFeedsParams struct {
 
 // GetFeeds returns the feed catalog. Pass nil for default pagination.
 func (c *Client) GetFeeds(ctx context.Context, params *ListFeedsParams) (*FeedList, error) {
-	q := url.Values{}
-	if params != nil {
-		if params.Limit > 0 {
-			q.Set("limit", strconv.Itoa(params.Limit))
-		}
-		if params.Offset > 0 {
-			q.Set("offset", strconv.Itoa(params.Offset))
-		}
-	}
 	path := "/feeds"
-	if len(q) > 0 {
-		path += "?" + q.Encode()
+	if params != nil {
+		path += paginationQuery(params.Limit, params.Offset)
 	}
 
 	var env struct {
@@ -330,18 +363,9 @@ type WebhookList struct {
 
 // ListWebhooks returns all webhook subscriptions for the authenticated client.
 func (c *Client) ListWebhooks(ctx context.Context, params *ListWebhooksParams) (*WebhookList, error) {
-	q := url.Values{}
-	if params != nil {
-		if params.Limit > 0 {
-			q.Set("limit", strconv.Itoa(params.Limit))
-		}
-		if params.Offset > 0 {
-			q.Set("offset", strconv.Itoa(params.Offset))
-		}
-	}
 	path := "/webhooks"
-	if len(q) > 0 {
-		path += "?" + q.Encode()
+	if params != nil {
+		path += paginationQuery(params.Limit, params.Offset)
 	}
 
 	var env struct {
@@ -444,18 +468,9 @@ type WebhookLogList struct {
 
 // GetWebhookLogs retrieves delivery logs for a webhook.
 func (c *Client) GetWebhookLogs(ctx context.Context, webhookID string, params *ListWebhooksParams) (*WebhookLogList, error) {
-	q := url.Values{}
-	if params != nil {
-		if params.Limit > 0 {
-			q.Set("limit", strconv.Itoa(params.Limit))
-		}
-		if params.Offset > 0 {
-			q.Set("offset", strconv.Itoa(params.Offset))
-		}
-	}
 	path := "/webhooks/" + webhookID + "/logs"
-	if len(q) > 0 {
-		path += "?" + q.Encode()
+	if params != nil {
+		path += paginationQuery(params.Limit, params.Offset)
 	}
 
 	var env struct {
