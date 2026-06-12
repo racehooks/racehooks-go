@@ -418,7 +418,7 @@ func (c *Client) DeleteWebhook(ctx context.Context, webhookID string) error {
 }
 
 // GetWebhookSecret retrieves the HMAC signing secret for a webhook.
-// Requires Starter plan or above.
+// Requires Live plan or above.
 func (c *Client) GetWebhookSecret(ctx context.Context, webhookID string) (string, error) {
 	var env struct {
 		Data struct {
