@@ -40,20 +40,31 @@ func ComputeSignature(secret string, rawBody []byte) string {
 }
 
 // WebhookPayload is the parsed envelope for every incoming RaceHooks webhook delivery.
-// RawData, RawAnalytics, and RawReplay are raw JSON — use json.Unmarshal into
-// your own structs for type-safe access to feed-specific fields.
+// Raw* fields contain JSON that callers unmarshal into their own structs based on Feed.
+//
+// Envelope shapes by feed family:
+//   - Most feeds: RawData
+//   - Per-driver feeds (timingdata, analytics.strategy, analytics.race-odds,
+//     analytics.gap-projection, analytics.tire-strategy): RawDrivers
+//   - analytics.constructor: RawConstructors
+//   - analytics.qualifying: RawSectors
+//   - analytics.race-odds also sets RawPairs (same-constructor H2H pairs)
 type WebhookPayload struct {
-	// Type is the feed identifier, e.g. "timingdata", "cardata", "raceevent".
-	Type string
+	// Feed is the feed identifier, e.g. "timingdata", "raceevent", "analytics.strategy".
+	Feed string
 	// SessionID is the active session identifier, or nil between sessions.
 	SessionID *string
-	// RawData is the raw JSON for the feed payload.
-	// Unmarshal into the appropriate struct based on Type.
+	// RawData holds the payload for session-wide feeds (e.g. "raceevent", "weatherdata").
 	RawData json.RawMessage
-	// HasAnalytics is true when analytics enrichment data is present.
-	HasAnalytics bool
-	// RawAnalytics is the raw JSON analytics enrichment (Analytics tier only).
-	RawAnalytics json.RawMessage
+	// RawDrivers holds the per-driver array. Present for "timingdata", "cardata", and
+	// all analytics feeds whose top-level payload key is "drivers".
+	RawDrivers json.RawMessage
+	// RawConstructors holds the constructor array for "analytics.constructor".
+	RawConstructors json.RawMessage
+	// RawPairs holds the same-constructor H2H pairs array for "analytics.race-odds".
+	RawPairs json.RawMessage
+	// RawSectors holds the sector-probability object for "analytics.qualifying".
+	RawSectors json.RawMessage
 	// IsReplay is true when this delivery is part of a simulated session replay.
 	IsReplay bool
 	// RawReplay is the raw JSON replay metadata.
@@ -72,9 +83,15 @@ type WebhookPayload struct {
 //	    http.Error(w, err.Error(), http.StatusBadRequest)
 //	    return
 //	}
-//	switch event.Type {
+//	switch event.Feed {
 //	case "timingdata":
-//	    // handle timing data
+//	    // per-driver payload in event.RawDrivers
+//	case "analytics.strategy":
+//	    // per-driver strategy signals in event.RawDrivers
+//	case "analytics.constructor":
+//	    // constructor rows in event.RawConstructors
+//	case "raceevent":
+//	    // session-wide payload in event.RawData
 //	}
 func ConstructEvent(rawBody []byte, signature, secret string) (*WebhookPayload, error) {
 	if !VerifySignature(secret, rawBody, signature) {
@@ -87,26 +104,41 @@ func ConstructEvent(rawBody []byte, signature, secret string) (*WebhookPayload, 
 // the signature. Prefer ConstructEvent when you have a signing secret.
 func ParsePayload(rawBody []byte) (*WebhookPayload, error) {
 	var raw struct {
-		Type      string          `json:"type"`
-		SessionID *string         `json:"sessionId"`
-		Data      json.RawMessage `json:"data"`
-		Analytics json.RawMessage `json:"analytics,omitempty"`
-		Replay    json.RawMessage `json:"_replay,omitempty"`
+		Feed         string          `json:"feed"`
+		SessionID    *string         `json:"sessionId"`
+		Data         json.RawMessage `json:"data"`
+		Drivers      json.RawMessage `json:"drivers,omitempty"`
+		Constructors json.RawMessage `json:"constructors,omitempty"`
+		Pairs        json.RawMessage `json:"pairs,omitempty"`
+		Sectors      json.RawMessage `json:"sectors,omitempty"`
+		Replay       json.RawMessage `json:"_replay,omitempty"`
 	}
 	if err := json.Unmarshal(rawBody, &raw); err != nil {
 		return nil, fmt.Errorf("racehooks: parse webhook payload: %w", err)
 	}
 
+	notNull := func(b json.RawMessage) bool {
+		return len(b) > 0 && !bytes.Equal(b, []byte("null"))
+	}
+
 	p := &WebhookPayload{
-		Type:      raw.Type,
+		Feed:      raw.Feed,
 		SessionID: raw.SessionID,
 		RawData:   raw.Data,
 	}
-	if len(raw.Analytics) > 0 && !bytes.Equal(raw.Analytics, []byte("null")) {
-		p.HasAnalytics = true
-		p.RawAnalytics = raw.Analytics
+	if notNull(raw.Drivers) {
+		p.RawDrivers = raw.Drivers
 	}
-	if len(raw.Replay) > 0 && !bytes.Equal(raw.Replay, []byte("null")) {
+	if notNull(raw.Constructors) {
+		p.RawConstructors = raw.Constructors
+	}
+	if notNull(raw.Pairs) {
+		p.RawPairs = raw.Pairs
+	}
+	if notNull(raw.Sectors) {
+		p.RawSectors = raw.Sectors
+	}
+	if notNull(raw.Replay) {
 		p.IsReplay = true
 		p.RawReplay = raw.Replay
 	}

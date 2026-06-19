@@ -9,8 +9,8 @@ import (
 
 const testSecret = "test_webhook_secret_abc123"
 
-// The body RaceHooks would have sent
-var sampleBody = []byte(`{"type":"timingdata","sessionId":"session_monaco_r","data":{"1":{"LastLapTime":{"Value":"1:12.345"}}},"analytics":null}`)
+// The body RaceHooks would have sent (uses "feed" key, not "type")
+var sampleBody = []byte(`{"feed":"timingdata","sessionId":"session_monaco_r","data":{"1":{"LastLapTime":{"Value":"1:12.345"}}}}`)
 
 func TestComputeSignature(t *testing.T) {
 	sig := racehooks.ComputeSignature(testSecret, sampleBody)
@@ -61,8 +61,8 @@ func TestConstructEvent_ValidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConstructEvent: %v", err)
 	}
-	if event.Type != "timingdata" {
-		t.Errorf("expected type timingdata, got %s", event.Type)
+	if event.Feed != "timingdata" {
+		t.Errorf("expected feed timingdata, got %s", event.Feed)
 	}
 	if event.SessionID == nil || *event.SessionID != "session_monaco_r" {
 		t.Errorf("unexpected sessionId: %v", event.SessionID)
@@ -84,27 +84,60 @@ func TestParsePayload_NoSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
-	if event.Type != "timingdata" {
-		t.Errorf("expected timingdata, got %s", event.Type)
+	if event.Feed != "timingdata" {
+		t.Errorf("expected timingdata, got %s", event.Feed)
 	}
 }
 
-func TestParsePayload_WithAnalytics(t *testing.T) {
-	body := []byte(`{"type":"timingdata","sessionId":"s1","data":{},"analytics":{"overtakeProb":0.82}}`)
+func TestParsePayload_AnalyticsStrategyFeed(t *testing.T) {
+	body := []byte(`{"feed":"analytics.strategy","sessionId":"s1","raceId":"2026-bahrain-r1","lap":22,"drivers":[{"tla":"VER","pitStopProbability":0.82}]}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
-	if !event.HasAnalytics {
-		t.Error("expected HasAnalytics=true")
+	if event.Feed != "analytics.strategy" {
+		t.Errorf("expected analytics.strategy, got %s", event.Feed)
 	}
-	if len(event.RawAnalytics) == 0 {
-		t.Error("expected non-empty RawAnalytics")
+	if len(event.RawDrivers) == 0 {
+		t.Error("expected non-empty RawDrivers for analytics.strategy")
+	}
+}
+
+func TestParsePayload_AnalyticsConstructorFeed(t *testing.T) {
+	body := []byte(`{"feed":"analytics.constructor","sessionId":"s1","raceId":"2026-bahrain-r1","lap":22,"constructors":[{"constructorId":"red_bull","expectedConstructorPoints":31.2}]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if len(event.RawConstructors) == 0 {
+		t.Error("expected non-empty RawConstructors for analytics.constructor")
+	}
+}
+
+func TestParsePayload_AnalyticsRaceOddsIncludesPairs(t *testing.T) {
+	body := []byte(`{"feed":"analytics.race-odds","sessionId":"s1","raceId":"2026-bahrain-r1","lap":22,"drivers":[],"pairs":[{"constructorId":"red_bull","driverA":"1","driverB":"11","h2hAWinsProbability":0.61}]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if len(event.RawPairs) == 0 {
+		t.Error("expected non-empty RawPairs for analytics.race-odds")
+	}
+}
+
+func TestParsePayload_AnalyticsQualifyingFeed(t *testing.T) {
+	body := []byte(`{"feed":"analytics.qualifying","sessionId":"s1","raceId":null,"lap":3,"sectors":{"poleMarginMs":142},"drivers":[]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if len(event.RawSectors) == 0 {
+		t.Error("expected non-empty RawSectors for analytics.qualifying")
 	}
 }
 
 func TestParsePayload_WithReplay(t *testing.T) {
-	body := []byte(`{"type":"cardata","sessionId":"s1","data":{},"_replay":{"sourcePath":"2025/race/","originalUtc":"2025-05-25T14:00:00Z","speed":60,"isReplay":true}}`)
+	body := []byte(`{"feed":"cardata","sessionId":"s1","data":{},"_replay":{"sourcePath":"2025/race/","originalUtc":"2025-05-25T14:00:00Z","speed":60,"isReplay":true}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -115,7 +148,7 @@ func TestParsePayload_WithReplay(t *testing.T) {
 }
 
 func TestParsePayload_NullSessionId(t *testing.T) {
-	body := []byte(`{"type":"trackstatus","sessionId":null,"data":{"Status":"1"}}`)
+	body := []byte(`{"feed":"trackstatus","sessionId":null,"data":{"Status":"1"}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -126,7 +159,7 @@ func TestParsePayload_NullSessionId(t *testing.T) {
 }
 
 func TestParsePayload_RawDataAccessible(t *testing.T) {
-	body := []byte(`{"type":"weatherdata","sessionId":"s1","data":{"AirTemp":"23.5","Humidity":"55"}}`)
+	body := []byte(`{"feed":"weatherdata","sessionId":"s1","data":{"AirTemp":"23.5","Humidity":"55"}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -138,6 +171,21 @@ func TestParsePayload_RawDataAccessible(t *testing.T) {
 	}
 	if wx["AirTemp"] != "23.5" {
 		t.Errorf("expected AirTemp 23.5, got %s", wx["AirTemp"])
+	}
+}
+
+func TestParsePayload_DriversEnvelope(t *testing.T) {
+	// Per-driver feeds (timingdata, cardata) use the "drivers" array, not "data"
+	body := []byte(`{"feed":"timingdata","sessionId":"s1","drivers":[{"number":"44","tla":"HAM","pos":1}]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if event.Feed != "timingdata" {
+		t.Errorf("expected timingdata, got %s", event.Feed)
+	}
+	if len(event.RawDrivers) == 0 {
+		t.Error("expected non-empty RawDrivers for per-driver feed")
 	}
 }
 
