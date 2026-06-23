@@ -49,11 +49,24 @@ func ComputeSignature(secret string, rawBody []byte) string {
 //   - analytics.constructor: RawConstructors
 //   - analytics.qualifying: RawSectors
 //   - analytics.race-odds also sets RawPairs (same-constructor H2H pairs)
+//   - Live-alert analytics feeds (analytics.sector-pace, .battle, .pit-window,
+//     .track-conditions, .pit-quality) and the data-wrapped weather feeds
+//     (weather.rain_onset, .rain_cleared, .strategy_divergence): RawData
+//   - Flat weather feeds (weather.forecast_update, .tyre_mismatch,
+//     .compound_crossover_alert) put their fields at the top level — unmarshal
+//     Raw (the full body) into your own struct.
 type WebhookPayload struct {
 	// Feed is the feed identifier, e.g. "timingdata", "raceevent", "analytics.strategy".
 	Feed string
 	// SessionID is the active session identifier, or nil between sessions.
 	SessionID *string
+	// Event is the event slug carried by raceevent and the weather feeds
+	// (e.g. "overtake", "rain_onset"); empty for feeds without one.
+	Event string
+	// Lap is the race lap on analytics and weather feeds; nil when absent.
+	Lap *int
+	// Utc is the ISO-8601 emit timestamp on analytics, raceevent, and weather feeds.
+	Utc string
 	// RawData holds the payload for session-wide feeds (e.g. "raceevent", "weatherdata").
 	RawData json.RawMessage
 	// RawDrivers holds the per-driver array. Present for "timingdata", "cardata", and
@@ -65,6 +78,9 @@ type WebhookPayload struct {
 	RawPairs json.RawMessage
 	// RawSectors holds the sector-probability object for "analytics.qualifying".
 	RawSectors json.RawMessage
+	// Raw is the complete, unparsed delivery body. Use it to unmarshal flat feeds
+	// (e.g. weather.forecast_update) whose fields live at the top level.
+	Raw json.RawMessage
 	// IsReplay is true when this delivery is part of a simulated session replay.
 	IsReplay bool
 	// RawReplay is the raw JSON replay metadata.
@@ -106,6 +122,9 @@ func ParsePayload(rawBody []byte) (*WebhookPayload, error) {
 	var raw struct {
 		Feed         string          `json:"feed"`
 		SessionID    *string         `json:"sessionId"`
+		Event        string          `json:"event,omitempty"`
+		Lap          *int            `json:"lap,omitempty"`
+		Utc          string          `json:"utc,omitempty"`
 		Data         json.RawMessage `json:"data"`
 		Drivers      json.RawMessage `json:"drivers,omitempty"`
 		Constructors json.RawMessage `json:"constructors,omitempty"`
@@ -124,7 +143,11 @@ func ParsePayload(rawBody []byte) (*WebhookPayload, error) {
 	p := &WebhookPayload{
 		Feed:      raw.Feed,
 		SessionID: raw.SessionID,
+		Event:     raw.Event,
+		Lap:       raw.Lap,
+		Utc:       raw.Utc,
 		RawData:   raw.Data,
+		Raw:       append(json.RawMessage(nil), rawBody...),
 	}
 	if notNull(raw.Drivers) {
 		p.RawDrivers = raw.Drivers

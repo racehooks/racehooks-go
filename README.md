@@ -1,6 +1,6 @@
 # racehooks-go
 
-Official Go client for RaceHooks — F1 live timing webhook delivery
+Official Go client for [RaceHooks](https://racehooks.io) — the motorsports analytics platform. Verify webhooks and parse 50+ live F1 feeds, including 18 derived analytics feeds backed by twelve production ML models.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/racehooks/racehooks-go.svg)](https://pkg.go.dev/github.com/racehooks/racehooks-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -40,7 +40,7 @@ func main() {
     resp, err := client.CreateWebhook(ctx, &racehooks.CreateWebhookRequest{
         FeedID:        "timingdata",
         WebhookURL:    "https://yourapp.com/hooks/f1",
-        WebhookMethod: "POST",
+        WebhookMethod: "post",
     })
     if err != nil {
         log.Fatal(err)
@@ -84,16 +84,34 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    switch event.Type {
+    switch event.Feed {
     case "timingdata":
-        // handle timing data
+        // per-driver payload in event.RawDrivers
     case "cardata":
-        // handle car telemetry
+        // per-driver telemetry in event.RawDrivers
+    case "raceevent":
+        // session-wide event in event.RawData (event.Event, event.Lap)
+    case "analytics.strategy", "analytics.race-odds":
+        // per-driver ML analytics in event.RawDrivers
+    case "analytics.battle", "analytics.pit-window", "analytics.track-conditions":
+        // live-alert payload in event.RawData (event.Lap, event.Utc)
+    case "weather.forecast_update", "weather.tyre_mismatch":
+        // flat weather feed — fields at top level; unmarshal event.Raw
     }
 
     w.WriteHeader(http.StatusOK)
 }
 ```
+
+## Analytics tier
+
+On the Analytics tier, RaceHooks delivers 18 derived analytics feeds — 12 `analytics.*`
+plus 6 `weather.*` — backed by twelve production ML models and an algorithmic
+intelligence layer (CTMC win/podium, ECP/ECPA, EKF tyre health). Their envelopes carry
+`Event`, `Lap`, and `Utc`. Data-wrapped feeds expose their payload in `RawData`; the flat
+weather feeds (`weather.forecast_update`, `weather.tyre_mismatch`,
+`weather.compound_crossover_alert`) put fields at the top level — unmarshal `event.Raw`
+into your own struct.
 
 ### Signature API
 
@@ -115,7 +133,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 | `UpdateWebhook(ctx, webhookID, req)` | Patch a webhook (URL, method, filters, active state). |
 | `DeleteWebhook(ctx, webhookID)` | Delete a webhook subscription. |
 | `TestWebhook(ctx, webhookID)` | Fire a test payload to the webhook URL immediately. |
-| `GetWebhookSecret(ctx, webhookID)` | Retrieve the HMAC signing secret. Requires Live plan or above. |
+| `GetWebhookSecret(ctx, webhookID)` | Retrieve the HMAC signing secret. Available on all paid plans. |
 | `RotateWebhookSecret(ctx, webhookID)` | Rotate the signing secret and return the new value. |
 | `GetWebhookLogs(ctx, webhookID, params)` | Retrieve paginated delivery logs for a webhook. |
 

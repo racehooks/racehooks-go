@@ -195,3 +195,44 @@ func TestParsePayload_InvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON")
 	}
 }
+
+func TestParsePayload_AnalyticsEnvelopeFields(t *testing.T) {
+	// Live-alert analytics feed: lap/utc on the envelope, payload in RawData.
+	body := []byte(`{"feed":"analytics.battle","sessionId":"9724","lap":30,"utc":"2026-06-01T14:30:00Z","data":{"battleStatus":"APPROACHING"}}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if event.Lap == nil || *event.Lap != 30 {
+		t.Errorf("expected lap 30, got %v", event.Lap)
+	}
+	if event.Utc != "2026-06-01T14:30:00Z" {
+		t.Errorf("expected utc, got %q", event.Utc)
+	}
+	if len(event.RawData) == 0 {
+		t.Error("expected non-empty RawData for analytics.battle")
+	}
+}
+
+func TestParsePayload_FlatWeatherFeedViaRaw(t *testing.T) {
+	// Flat weather feed: fields at the top level (no data wrapper) — reachable via Raw.
+	body := []byte(`{"feed":"weather.forecast_update","sessionId":"9724","event":"weather.forecast_update","lap":10,"utc":"t","source":"open-meteo","model":"ukmo_seamless","currentPrecipRateMmhr":0.0,"precipProbabilityPct":65,"next60min":[]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if event.Event != "weather.forecast_update" {
+		t.Errorf("expected event slug, got %q", event.Event)
+	}
+	var forecast struct {
+		Source               string  `json:"source"`
+		Model                string  `json:"model"`
+		PrecipProbabilityPct float64 `json:"precipProbabilityPct"`
+	}
+	if err := json.Unmarshal(event.Raw, &forecast); err != nil {
+		t.Fatalf("unmarshal Raw: %v", err)
+	}
+	if forecast.Model != "ukmo_seamless" || forecast.PrecipProbabilityPct != 65 {
+		t.Errorf("flat fields not reachable via Raw: %+v", forecast)
+	}
+}
