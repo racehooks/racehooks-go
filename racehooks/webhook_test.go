@@ -10,7 +10,7 @@ import (
 const testSecret = "test_webhook_secret_abc123"
 
 // The body RaceHooks would have sent (uses "feed" key, not "type")
-var sampleBody = []byte(`{"feed":"timingdata","sessionId":"session_monaco_r","data":{"1":{"LastLapTime":{"Value":"1:12.345"}}}}`)
+var sampleBody = []byte(`{"feed":"timing.data","sessionId":"session_monaco_r","data":{"1":{"LastLapTime":{"Value":"1:12.345"}}}}`)
 
 func TestComputeSignature(t *testing.T) {
 	sig := racehooks.ComputeSignature(testSecret, sampleBody)
@@ -61,8 +61,8 @@ func TestConstructEvent_ValidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConstructEvent: %v", err)
 	}
-	if event.Feed != "timingdata" {
-		t.Errorf("expected feed timingdata, got %s", event.Feed)
+	if event.Feed != "timing.data" {
+		t.Errorf("expected feed timing.data, got %s", event.Feed)
 	}
 	if event.SessionID == nil || *event.SessionID != "session_monaco_r" {
 		t.Errorf("unexpected sessionId: %v", event.SessionID)
@@ -84,8 +84,8 @@ func TestParsePayload_NoSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
-	if event.Feed != "timingdata" {
-		t.Errorf("expected timingdata, got %s", event.Feed)
+	if event.Feed != "timing.data" {
+		t.Errorf("expected timing.data, got %s", event.Feed)
 	}
 }
 
@@ -98,19 +98,41 @@ func TestParsePayload_AnalyticsStrategyFeed(t *testing.T) {
 	if event.Feed != "analytics.strategy" {
 		t.Errorf("expected analytics.strategy, got %s", event.Feed)
 	}
+	// Analytics feeds carry a session id and a SEPARATE, distinct race id.
+	if event.SessionID == nil || *event.SessionID != "s1" {
+		t.Errorf("expected sessionId s1, got %v", event.SessionID)
+	}
+	if event.RaceID == nil || *event.RaceID != "2026-bahrain-r1" {
+		t.Errorf("expected raceId 2026-bahrain-r1, got %v", event.RaceID)
+	}
 	if len(event.RawDrivers) == 0 {
 		t.Error("expected non-empty RawDrivers for analytics.strategy")
 	}
 }
 
-func TestParsePayload_AnalyticsConstructorFeed(t *testing.T) {
-	body := []byte(`{"feed":"analytics.constructor","sessionId":"s1","raceId":"2026-bahrain-r1","lap":22,"constructors":[{"constructorId":"red_bull","expectedConstructorPoints":31.2}]}`)
+func TestParsePayload_AnalyticsTeamPointsFeed(t *testing.T) {
+	body := []byte(`{"feed":"analytics.team-points","sessionId":"s1","raceId":"2026-bahrain-r1","lap":22,"constructors":[{"constructorId":"red_bull","expectedConstructorPoints":31.2}]}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
 	if len(event.RawConstructors) == 0 {
-		t.Error("expected non-empty RawConstructors for analytics.constructor")
+		t.Error("expected non-empty RawConstructors for analytics.team-points")
+	}
+}
+
+func TestParsePayload_NullRaceID(t *testing.T) {
+	// analytics.qualifying carries a null raceId — RaceID must decode to nil.
+	body := []byte(`{"feed":"analytics.qualifying","sessionId":"s1","raceId":null,"lap":3,"sectors":{"poleMarginMs":142},"drivers":[]}`)
+	event, err := racehooks.ParsePayload(body)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if event.RaceID != nil {
+		t.Errorf("expected nil raceId, got %v", event.RaceID)
+	}
+	if event.SessionID == nil || *event.SessionID != "s1" {
+		t.Errorf("expected sessionId s1, got %v", event.SessionID)
 	}
 }
 
@@ -137,7 +159,7 @@ func TestParsePayload_AnalyticsQualifyingFeed(t *testing.T) {
 }
 
 func TestParsePayload_WithReplay(t *testing.T) {
-	body := []byte(`{"feed":"cardata","sessionId":"s1","data":{},"_replay":{"sourcePath":"2025/race/","originalUtc":"2025-05-25T14:00:00Z","speed":60,"isReplay":true}}`)
+	body := []byte(`{"feed":"timing.data","sessionId":"s1","data":{},"_replay":{"simulationId":"sim_1","originalSessionId":"2025-monaco-r1","sessionElapsed":"00:42:10.500"}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -148,7 +170,7 @@ func TestParsePayload_WithReplay(t *testing.T) {
 }
 
 func TestParsePayload_NullSessionId(t *testing.T) {
-	body := []byte(`{"feed":"trackstatus","sessionId":null,"data":{"Status":"1"}}`)
+	body := []byte(`{"feed":"session.track-status","sessionId":null,"data":{"Status":"1"}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -159,7 +181,7 @@ func TestParsePayload_NullSessionId(t *testing.T) {
 }
 
 func TestParsePayload_RawDataAccessible(t *testing.T) {
-	body := []byte(`{"feed":"weatherdata","sessionId":"s1","data":{"AirTemp":"23.5","Humidity":"55"}}`)
+	body := []byte(`{"feed":"weather.data","sessionId":"s1","data":{"AirTemp":"23.5","Humidity":"55"}}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
@@ -175,17 +197,31 @@ func TestParsePayload_RawDataAccessible(t *testing.T) {
 }
 
 func TestParsePayload_DriversEnvelope(t *testing.T) {
-	// Per-driver feeds (timingdata, cardata) use the "drivers" array, not "data"
-	body := []byte(`{"feed":"timingdata","sessionId":"s1","drivers":[{"number":"44","tla":"HAM","pos":1}]}`)
+	// Per-driver feeds (e.g. timing.data) use the "drivers" array, not "data".
+	// Each driver entry embeds the full DriverRef identity block.
+	body := []byte(`{"feed":"timing.data","sessionId":"s1","drivers":[{"driverId":"lewis-hamilton","constructorId":"ferrari","number":"44","tla":"HAM","name":"Lewis Hamilton","team":"Ferrari","pos":1}]}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
-	if event.Feed != "timingdata" {
-		t.Errorf("expected timingdata, got %s", event.Feed)
+	if event.Feed != "timing.data" {
+		t.Errorf("expected timing.data, got %s", event.Feed)
 	}
 	if len(event.RawDrivers) == 0 {
 		t.Error("expected non-empty RawDrivers for per-driver feed")
+	}
+
+	var drivers []racehooks.DriverRef
+	if err := json.Unmarshal(event.RawDrivers, &drivers); err != nil {
+		t.Fatalf("unmarshal RawDrivers into []DriverRef: %v", err)
+	}
+	if len(drivers) != 1 {
+		t.Fatalf("expected 1 driver, got %d", len(drivers))
+	}
+	if drivers[0].DriverID != "lewis-hamilton" || drivers[0].Tla != "HAM" ||
+		drivers[0].ConstructorID != "ferrari" || drivers[0].Number != "44" ||
+		drivers[0].Team != "Ferrari" || drivers[0].Name != "Lewis Hamilton" {
+		t.Errorf("DriverRef fields not decoded: %+v", drivers[0])
 	}
 }
 
@@ -216,12 +252,12 @@ func TestParsePayload_AnalyticsEnvelopeFields(t *testing.T) {
 
 func TestParsePayload_FlatWeatherFeedViaRaw(t *testing.T) {
 	// Flat weather feed: fields at the top level (no data wrapper) — reachable via Raw.
-	body := []byte(`{"feed":"weather.forecast_update","sessionId":"9724","event":"weather.forecast_update","lap":10,"utc":"t","source":"open-meteo","model":"ukmo_seamless","currentPrecipRateMmhr":0.0,"precipProbabilityPct":65,"next60min":[]}`)
+	body := []byte(`{"feed":"weather.forecast-update","sessionId":"9724","event":"weather.forecast-update","lap":10,"utc":"t","source":"open-meteo","model":"ukmo_seamless","currentPrecipRateMmhr":0.0,"precipProbabilityPct":65,"next60min":[]}`)
 	event, err := racehooks.ParsePayload(body)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
-	if event.Event != "weather.forecast_update" {
+	if event.Event != "weather.forecast-update" {
 		t.Errorf("expected event slug, got %q", event.Event)
 	}
 	var forecast struct {

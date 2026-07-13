@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Go test binaries and coverage output
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Build output
+/bin/
+/dist/

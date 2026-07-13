@@ -129,8 +129,8 @@ func TestGetFeeds_Success(t *testing.T) {
 		writeJSON(w, map[string]interface{}{
 			"data": map[string]interface{}{
 				"feeds": []map[string]interface{}{
-					{"feedId": "cardata", "name": "Car Data", "path": "CarData.z", "availability": "pro"},
-					{"feedId": "timingdata", "name": "Timing Data", "path": "TimingData", "availability": "free"},
+					{"feedId": "timing.data", "name": "Timing Data", "path": "TimingData", "availability": "free"},
+					{"feedId": "weather.data", "name": "Weather Data", "path": "WeatherData", "availability": "free"},
 				},
 				"total":  2,
 				"limit":  50,
@@ -147,8 +147,75 @@ func TestGetFeeds_Success(t *testing.T) {
 	if len(feeds.Feeds) != 2 {
 		t.Errorf("expected 2 feeds, got %d", len(feeds.Feeds))
 	}
-	if feeds.Feeds[0].FeedID != "cardata" {
-		t.Errorf("expected feedId cardata, got %s", feeds.Feeds[0].FeedID)
+	if feeds.Feeds[0].FeedID != "timing.data" {
+		t.Errorf("expected feedId timing.data, got %s", feeds.Feeds[0].FeedID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+func TestGetEvents_Success(t *testing.T) {
+	mux := setupAuthMux(t)
+	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Query().Get("year") != "2026" {
+			t.Errorf("expected year=2026, got %s", r.URL.Query().Get("year"))
+		}
+		if r.URL.Query().Get("upcoming") != "1" {
+			t.Errorf("expected upcoming=1, got %s", r.URL.Query().Get("upcoming"))
+		}
+		writeJSON(w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"events": []map[string]interface{}{
+					{
+						"eventId":      "2026-bahrain",
+						"name":         "Bahrain Grand Prix",
+						"officialName": "FORMULA 1 GULF AIR BAHRAIN GRAND PRIX 2026",
+						"countryCode":  "BHR",
+						"countryName":  "Bahrain",
+						"location":     "Sakhir",
+						"circuitName":  "Bahrain International Circuit",
+						"state":        "upcoming",
+						"type":         "race",
+						"roundText":    "Round 1",
+						"sessions": []map[string]interface{}{
+							{
+								"sessionId": "2026-bahrain_Race",
+								"type":      "Race",
+								"name":      "Race",
+								"status":    "scheduled",
+								"startDate": "2026-03-16T15:00:00",
+								"endDate":   "2026-03-16T17:00:00",
+								"gmtOffset": "+03:00",
+								"path":      "2026/2026-03-16_Bahrain_Grand_Prix/2026-03-16_Race/",
+							},
+						},
+					},
+				},
+				"total": 1,
+			},
+		})
+	})
+
+	_, client := newTestServer(t, mux)
+	list, err := client.GetEvents(context.Background(), &racehooks.ListEventsParams{Year: "2026", Upcoming: true})
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if list.Total != 1 || len(list.Events) != 1 {
+		t.Fatalf("expected 1 event, got total=%d len=%d", list.Total, len(list.Events))
+	}
+	ev := list.Events[0]
+	if ev.EventID != "2026-bahrain" || ev.CircuitName != "Bahrain International Circuit" {
+		t.Errorf("event fields not decoded: %+v", ev)
+	}
+	if len(ev.Sessions) != 1 || ev.Sessions[0].SessionID != "2026-bahrain_Race" ||
+		ev.Sessions[0].GmtOffset != "+03:00" {
+		t.Errorf("event session not decoded: %+v", ev.Sessions)
 	}
 }
 
@@ -179,7 +246,7 @@ func TestCreateWebhook_Success(t *testing.T) {
 			"data": map[string]interface{}{
 				"webhook": map[string]interface{}{
 					"webhookId":        "wh_abc123",
-					"feedId":           "timingdata",
+					"feedId":           "timing.data",
 					"webhookUrl":       "https://example.com/hook",
 					"webhookMethod":    "post",
 					"active":           true,
@@ -194,7 +261,7 @@ func TestCreateWebhook_Success(t *testing.T) {
 
 	_, client := newTestServer(t, mux)
 	resp, err := client.CreateWebhook(context.Background(), &racehooks.CreateWebhookRequest{
-		FeedID:        "timingdata",
+		FeedID:        "timing.data",
 		WebhookURL:    "https://example.com/hook",
 		WebhookMethod: "post",
 	})
@@ -220,7 +287,7 @@ func TestListWebhooks_Success(t *testing.T) {
 				"webhooks": []map[string]interface{}{
 					{
 						"webhookId":        "wh_1",
-						"feedId":           "cardata",
+						"feedId":           "timing.data",
 						"webhookUrl":       "https://example.com/a",
 						"webhookMethod":    "post",
 						"active":           true,
@@ -255,7 +322,7 @@ func TestGetWebhook_Success(t *testing.T) {
 			"data": map[string]interface{}{
 				"webhook": map[string]interface{}{
 					"webhookId":        "wh_xyz",
-					"feedId":           "weatherdata",
+					"feedId":           "weather.data",
 					"webhookUrl":       "https://example.com/wx",
 					"webhookMethod":    "post",
 					"active":           true,
@@ -271,8 +338,8 @@ func TestGetWebhook_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWebhook: %v", err)
 	}
-	if wh.FeedID != "weatherdata" {
-		t.Errorf("expected feedId weatherdata, got %s", wh.FeedID)
+	if wh.FeedID != "weather.data" {
+		t.Errorf("expected feedId weather.data, got %s", wh.FeedID)
 	}
 }
 
@@ -498,7 +565,7 @@ func TestGetWebhookLogs_Pagination(t *testing.T) {
 		}
 		writeJSON(w, map[string]interface{}{
 			"data": map[string]interface{}{
-				"logs": []interface{}{},
+				"logs":  []interface{}{},
 				"total": 0, "limit": 10, "offset": 20,
 			},
 		})

@@ -292,16 +292,93 @@ func (c *Client) GetFeeds(ctx context.Context, params *ListFeedsParams) (*FeedLi
 }
 
 // ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// Event is a race weekend on the calendar.
+type Event struct {
+	EventID      string         `json:"eventId"`
+	Name         string         `json:"name"`
+	OfficialName string         `json:"officialName"`
+	CountryCode  string         `json:"countryCode"`
+	CountryName  string         `json:"countryName"`
+	Location     string         `json:"location"`
+	CircuitName  string         `json:"circuitName"`
+	State        string         `json:"state"`
+	Type         string         `json:"type"`
+	RoundText    string         `json:"roundText"`
+	Sessions     []EventSession `json:"sessions,omitempty"`
+}
+
+// EventSession is a single session (Practice, Qualifying, Sprint, Race) within an Event.
+type EventSession struct {
+	SessionID string `json:"sessionId"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	StartDate string `json:"startDate"`
+	EndDate   string `json:"endDate"`
+	GmtOffset string `json:"gmtOffset"`
+	Path      string `json:"path"`
+}
+
+// EventList is the response from GET /v1/events.
+type EventList struct {
+	Events []Event `json:"events"`
+	Total  int     `json:"total"`
+}
+
+// ListEventsParams controls filtering and pagination for GetEvents.
+// Zero-valued fields are omitted so the server can apply its own defaults.
+type ListEventsParams struct {
+	Limit    int
+	Offset   int
+	Upcoming bool
+	Year     string
+}
+
+// GetEvents returns the event calendar. Pass nil for defaults.
+func (c *Client) GetEvents(ctx context.Context, params *ListEventsParams) (*EventList, error) {
+	path := "/events"
+	if params != nil {
+		q := url.Values{}
+		if params.Limit > 0 {
+			q.Set("limit", strconv.Itoa(params.Limit))
+		}
+		if params.Offset > 0 {
+			q.Set("offset", strconv.Itoa(params.Offset))
+		}
+		if params.Upcoming {
+			q.Set("upcoming", "1")
+		}
+		if params.Year != "" {
+			q.Set("year", params.Year)
+		}
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+	}
+
+	var env struct {
+		Data EventList `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// ---------------------------------------------------------------------------
 // Webhooks
 // ---------------------------------------------------------------------------
 
 // WebhookFilters specifies optional delivery filters for a webhook subscription.
 type WebhookFilters struct {
-	Drivers       []string          `json:"drivers,omitempty"`
-	DriverNumbers []string          `json:"driverNumbers,omitempty"`
-	Constructors  []string          `json:"constructors,omitempty"`
-	Positions     *PositionRange    `json:"positions,omitempty"`
-	EventTypes    []string          `json:"eventTypes,omitempty"`
+	Drivers       []string       `json:"drivers,omitempty"`
+	DriverNumbers []string       `json:"driverNumbers,omitempty"`
+	Constructors  []string       `json:"constructors,omitempty"`
+	Positions     *PositionRange `json:"positions,omitempty"`
+	EventTypes    []string       `json:"eventTypes,omitempty"`
 }
 
 // PositionRange specifies a race-position window for filtering.
@@ -495,6 +572,127 @@ func (c *Client) TestWebhook(ctx context.Context, webhookID string) (*TestWebhoo
 		Data TestWebhookResponse `json:"data"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/webhooks/"+webhookID+"/test", nil, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// ---------------------------------------------------------------------------
+// Fantasy
+//
+// Pit stop leaderboards and estimated F1 Fantasy points per driver. All three
+// endpoints require a paid plan (Developer or higher).
+// ---------------------------------------------------------------------------
+
+// PitTimeStop is a single pit stop time entry on a fantasy pit-times leaderboard.
+// PitStopTimeSec is the stationary pit-stop time (seconds). Lap is a pointer
+// because live-only stops may not carry a lap number.
+type PitTimeStop struct {
+	Driver         string  `json:"driver"`
+	TLA            string  `json:"tla"`
+	Team           string  `json:"team"`
+	PitStopTimeSec float64 `json:"pitStopTimeSec"`
+	Lap            *int    `json:"lap"`
+}
+
+// SessionPitTimes is the response from GET /v1/fantasy/session/:sessionId/pit-times.
+type SessionPitTimes struct {
+	SessionID   string        `json:"sessionId"`
+	Source      string        `json:"source"` // "live" | "historical"
+	FastestStop *PitTimeStop  `json:"fastestStop"`
+	Stops       []PitTimeStop `json:"stops"`
+}
+
+// FantasyScoreBreakdown is the per-driver fantasy points breakdown. Nullable
+// components (grid-derived, fastest-lap, teammate-quali) use pointer types: they
+// are nil while a session is live or when the component does not apply.
+type FantasyScoreBreakdown struct {
+	RacePosPoints         int  `json:"racePosPoints"`
+	QualiPosPoints        *int `json:"qualiPosPoints"`
+	Q3Bonus               *int `json:"q3Bonus"`
+	PositionsGained       *int `json:"positionsGained"`
+	PositionsGainedPoints int  `json:"positionsGainedPoints"`
+	FastestLapPoints      *int `json:"fastestLapPoints"`
+	BeatTeammateRace      int  `json:"beatTeammateRace"`
+	BeatTeammateQuali     *int `json:"beatTeammateQuali"`
+	DNFPenalty            int  `json:"dnfPenalty"`
+	Total                 int  `json:"total"`
+}
+
+// FantasyScoreEntry is one driver's fantasy score with its breakdown.
+type FantasyScoreEntry struct {
+	Driver    string                `json:"driver"`
+	TLA       string                `json:"tla"`
+	Team      string                `json:"team"`
+	Breakdown FantasyScoreBreakdown `json:"breakdown"`
+}
+
+// RaceScores is the response from GET /v1/fantasy/races/:raceId/scores.
+type RaceScores struct {
+	RaceID      string              `json:"raceId"`
+	SessionType string              `json:"sessionType"` // "grand_prix" | "sprint"
+	Scores      []FantasyScoreEntry `json:"scores"`
+	DataQuality string              `json:"dataQuality,omitempty"`
+}
+
+// SessionScores is the response from GET /v1/fantasy/session/:sessionId/scores —
+// the running (provisional) score while a session is live. Live is false and
+// Scores is empty when no session is currently live for this id.
+type SessionScores struct {
+	SessionID   string              `json:"sessionId"`
+	Live        bool                `json:"live"`
+	Provisional bool                `json:"provisional"`
+	SessionType string              `json:"sessionType"` // "grand_prix" | "sprint"
+	CurrentLap  int                 `json:"currentLap"`
+	TotalLaps   int                 `json:"totalLaps"`
+	Scores      []FantasyScoreEntry `json:"scores"`
+}
+
+// GetRaceScoresParams controls which completed session GetRaceScores scores.
+type GetRaceScoresParams struct {
+	// Session selects the session to score: "grand_prix" (default) or "sprint".
+	Session string
+}
+
+// GetRaceScores returns estimated fantasy points per driver for a completed
+// session. Pass nil to score the Grand Prix, or &GetRaceScoresParams{Session:
+// "sprint"} to score the Sprint (compressed points table).
+func (c *Client) GetRaceScores(ctx context.Context, raceID string, params *GetRaceScoresParams) (*RaceScores, error) {
+	path := "/fantasy/races/" + raceID + "/scores"
+	// The API querystring accepts session=sprint (default = Grand Prix); only the
+	// Sprint needs an explicit param.
+	if params != nil && params.Session == "sprint" {
+		path += "?session=sprint"
+	}
+
+	var env struct {
+		Data RaceScores `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// GetSessionScores returns the running (provisional) fantasy score for each
+// driver while a session is live (GET /v1/fantasy/session/:sessionId/scores).
+func (c *Client) GetSessionScores(ctx context.Context, sessionID string) (*SessionScores, error) {
+	var env struct {
+		Data SessionScores `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/fantasy/session/"+sessionID+"/scores", nil, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// GetSessionPitTimes returns pit stop time rankings for a session
+// (GET /v1/fantasy/session/:sessionId/pit-times).
+func (c *Client) GetSessionPitTimes(ctx context.Context, sessionID string) (*SessionPitTimes, error) {
+	var env struct {
+		Data SessionPitTimes `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/fantasy/session/"+sessionID+"/pit-times", nil, &env); err != nil {
 		return nil, err
 	}
 	return &env.Data, nil
