@@ -158,6 +158,10 @@ pkg.go.dev indexes the new version automatically on first request. CI
 (`.github/workflows/ci.yml`) runs `go build`, `go vet`, and `go test` on every
 push and pull request to `main`.
 
+## Documentation
+
+Full docs: https://racehooks.io/docs/sdk
+
 ## License
 
 MIT
