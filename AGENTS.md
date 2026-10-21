@@ -97,7 +97,8 @@ pits, _    := client.GetSessionPitTimes(ctx, "2026-bahrain-r1_Race")            
 `NewClient` · `Authenticate` · `GetFeeds` · `GetEvents` · `CreateWebhook` · `ListWebhooks` ·
 `GetWebhook` · `UpdateWebhook` · `DeleteWebhook` · `TestWebhook` · `GetWebhookSecret` ·
 `RotateWebhookSecret` · `GetWebhookLogs` · `GetRaceScores` · `GetSessionScores` ·
-`GetSessionPitTimes`. Signature helpers: `VerifySignature`, `ComputeSignature`,
+`GetSessionPitTimes` · `GetReplayableSessions` · `GetDemoSession` · `GetReplayQuota` ·
+`PrepareReplay` · `GetReplayStatus`. Signature helpers: `VerifySignature`, `ComputeSignature`,
 `ConstructEvent`, `ParsePayload`.
 
 ## Key facts for correct answers

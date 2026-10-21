@@ -138,6 +138,23 @@ into your own struct.
 | `GetRaceScores(ctx, raceID, params)` | Estimated fantasy points for a completed race. Pass `&GetRaceScoresParams{Session: "sprint"}` to score the Sprint. Requires a paid plan. |
 | `GetSessionScores(ctx, sessionID)` | Running (provisional) fantasy score while a session is live. Requires a paid plan. |
 | `GetSessionPitTimes(ctx, sessionID)` | Pit stop time leaderboard for a session (`PitStopTimeSec` per driver). Requires a paid plan. |
+| `GetReplayableSessions(ctx, params)` | List completed sessions available for replay (filter by `Year`, `Type`; paginate with `Limit`/`Offset`). |
+| `GetDemoSession(ctx)` | The curated demo session. |
+| `GetReplayQuota(ctx)` | Your tier's distinct-session replay quota (`-1` = unlimited). |
+| `PrepareReplay(ctx, sessionID)` | Generate the session's recorded-playback artifact if it is cold. |
+| `GetReplayStatus(ctx, sessionID)` | Whether the artifact is `ready`, `preparing`, `missing` or `unknown`. |
+
+### Session replay
+
+Replay a completed session as if it were live: list sessions, warm the
+recorded-playback artifact, then stream it from the simulate-stream service.
+
+```go
+list, _ := client.GetReplayableSessions(ctx, &racehooks.ListReplayableSessionsParams{Year: 2026, Type: "race"})
+art, _  := client.PrepareReplay(ctx, list.Sessions[0].SessionID) // art.Status: "ready" | "preparing" | ...
+art, _   = client.GetReplayStatus(ctx, art.SessionID)
+quota, _ := client.GetReplayQuota(ctx)
+```
 
 ## Requirements
 
