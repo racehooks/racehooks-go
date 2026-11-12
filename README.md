@@ -104,8 +104,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 ## Analytics tier
 
 On the Analytics tier, RaceHooks delivers the derived `analytics.*` and `weather.*`
-feeds — backed by production ML models and an algorithmic intelligence layer (CTMC
-win/podium, ECP/ECPA, EKF tyre health). Analytics envelopes carry `SessionID`, a
+feeds, covering win/podium probability, tyre health and more. Analytics envelopes carry `SessionID`, a
 separate nullable `RaceID`, `Lap`, and `Utc`. Data-wrapped feeds expose their payload in
 `RawData`; the flat weather feeds (`weather.forecast-update`, `weather.tire-mismatch`,
 `weather.compound-crossover`) put fields at the top level — unmarshal `event.Raw`
